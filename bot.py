@@ -3,14 +3,13 @@ from discord.ext import commands
 from discord import app_commands
 import yt_dlp
 import asyncio
+import os
 
 # ================= CONFIG =================
 
-TOKEN = "SEU_TOKEN_AQUI"
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = True
-
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
@@ -50,7 +49,7 @@ async def ensure_voice(interaction: discord.Interaction):
     return None
 
 
-def get_music(query):
+def get_music(query: str):
     if not query.startswith("http"):
         query = f"ytsearch1:{query}"
 
@@ -63,7 +62,7 @@ def get_music(query):
         return info["url"], info["title"]
 
 
-async def play_next(guild):
+async def play_next(guild: discord.Guild):
     global loop_music
 
     vc = guild.voice_client
@@ -96,17 +95,23 @@ async def play(interaction: discord.Interaction, musica: str):
 
     try:
         url, title = get_music(musica)
-    except:
-        await interaction.response.send_message("❌ Não consegui encontrar a música.")
+    except Exception:
+        await interaction.response.send_message(
+            "❌ Não consegui encontrar essa música."
+        )
         return
 
     queue.append((url, title))
 
     if not vc.is_playing():
-        await interaction.response.send_message(f"🎶 Tocando: **{title}**")
+        await interaction.response.send_message(
+            f"🎶 Tocando agora: **{title}**"
+        )
         await play_next(interaction.guild)
     else:
-        await interaction.response.send_message(f"➕ Adicionado à fila: **{title}**")
+        await interaction.response.send_message(
+            f"➕ Adicionado à fila: **{title}**"
+        )
 
 
 @tree.command(name="pause", description="Pausa a música")
@@ -139,7 +144,7 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Nada tocando")
 
 
-@tree.command(name="queue", description="Mostra a fila")
+@tree.command(name="queue", description="Mostra a fila de músicas")
 async def show_queue(interaction: discord.Interaction):
     if not queue:
         await interaction.response.send_message("📭 Fila vazia")
@@ -149,21 +154,40 @@ async def show_queue(interaction: discord.Interaction):
     for i, (_, title) in enumerate(queue, start=1):
         text += f"{i}. {title}\n"
 
-    await interaction.response.send_message(f"📜 **Fila:**\n{text}")
+    await interaction.response.send_message(
+        f"📜 **Fila atual:**\n{text}"
+    )
 
 
-@tree.command(name="loop", description="Ativa ou desativa o loop")
+@tree.command(name="loop", description="Ativa ou desativa o loop da música")
 async def loop(interaction: discord.Interaction):
     global loop_music
     loop_music = not loop_music
     status = "ativado" if loop_music else "desativado"
     await interaction.response.send_message(f"🔁 Loop {status}")
 
+
+@tree.command(name="stop", description="Para a música e sai do canal")
+async def stop(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc:
+        await vc.disconnect()
+        queue.clear()
+        await interaction.response.send_message("🛑 Música parada e saí do canal")
+    else:
+        await interaction.response.send_message("❌ Não estou em um canal")
+
+
 # ================= READY =================
 
 @bot.event
 async def on_ready():
     await tree.sync()
-    print(f"✅ Conectado como {bot.user}")
+    print(f"✅ Bot conectado como {bot.user}")
+
+# ================= RUN =================
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN não encontrado nas variáveis de ambiente")
 
 bot.run(TOKEN)
