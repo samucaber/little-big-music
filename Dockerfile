@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Instala ffmpeg (necessário para áudio no Discord)
 RUN apt-get update && apt-get install -y ffmpeg
 
 WORKDIR /app

@@ -1,141 +1,74 @@
+import os
 import discord
 from discord import app_commands
-import yt_dlp as youtube_dl
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-import os
+import yt_dlp
 
-# ========================
-# VARIÁVEIS DE AMBIENTE
-# ========================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
-# ========================
-# SPOTIFY (opcional)
-# ========================
-sp = None
-if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-    sp = spotipy.Spotify(
-        auth_manager=SpotifyClientCredentials(
-            client_id=SPOTIFY_CLIENT_ID,
-            client_secret=SPOTIFY_CLIENT_SECRET
-        )
-    )
-
-# ========================
-# YT-DLP (streaming)
-# ========================
-ydl_opts = {
-    "format": "bestaudio",
-    "noplaylist": True,
-    "quiet": True,
-}
-
-# ========================
-# DISCORD CLIENT
-# ========================
 intents = discord.Intents.default()
 intents.voice_states = True
 
-bot = discord.Client(intents=intents)
-tree = app_commands.CommandTree(bot)
+class MyClient(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
 
-# ========================
-# EVENTOS
-# ========================
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("✅ Slash commands sincronizados")
+
+bot = MyClient()
+
 @bot.event
 async def on_ready():
-    await tree.sync()
-    print(f"✅ Bot {bot.user} está online e pronto!")
+    print(f"🤖 Bot conectado como {bot.user}")
 
-# ========================
-# /play
-# ========================
-@tree.command(name="play", description="Toca uma música do YouTube ou Spotify")
+@bot.tree.command(name="play", description="Toca música do YouTube")
 async def play(interaction: discord.Interaction, url: str):
-
-    if not interaction.user.voice:
-        await interaction.response.send_message(
-            "❌ Você precisa estar em um canal de voz!",
-            ephemeral=True
-        )
-        return
-
     await interaction.response.defer()
+
+    # Verifica se o usuário está em canal de voz
+    if interaction.user.voice is None:
+        await interaction.followup.send("❌ Entre em um canal de voz primeiro.")
+        return
 
     channel = interaction.user.voice.channel
 
-    vc = interaction.guild.voice_client
-    if vc is None:
+    # Conecta ao canal
+    if interaction.guild.voice_client is None:
         vc = await channel.connect()
+    else:
+        vc = interaction.guild.voice_client
 
-    try:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+    # yt-dlp
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "noplaylist": True,
+    }
 
-            # ========= SPOTIFY =========
-            if "spotify.com" in url:
-                if sp is None:
-                    await vc.disconnect()
-                    await interaction.followup.send(
-                        "⚠️ Spotify não configurado. Use link do YouTube."
-                    )
-                    return
-
-                track_id = url.split("/")[-1].split("?")[0]
-                track = sp.track(track_id)
-                search = f"{track['name']} {track['artists'][0]['name']}"
-
-                data = ydl.extract_info(
-                    f"ytsearch:{search}", download=False
-                )
-
-                if not data["entries"]:
-                    await vc.disconnect()
-                    await interaction.followup.send(
-                        "❌ Música não encontrada no YouTube."
-                    )
-                    return
-
-                info = data["entries"][0]
-
-            # ========= YOUTUBE =========
-            else:
-                info = ydl.extract_info(url, download=False)
-
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
         audio_url = info["url"]
+        title = info.get("title", "Música")
 
-        vc.play(discord.FFmpegPCMAudio(audio_url))
+    source = discord.FFmpegPCMAudio(
+        audio_url,
+        before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        options="-vn",
+    )
 
-        await interaction.followup.send(
-            f"🎵 **Tocando:** {info.get('title', 'Desconhecido')}"
-        )
+    vc.play(source)
 
-    except Exception as e:
-        await vc.disconnect()
-        await interaction.followup.send(
-            f"❌ Erro ao tocar música:\n```{e}```"
-        )
+    await interaction.followup.send(f"🎶 Tocando: **{title}**")
 
-# ========================
-# /stop
-# ========================
-@tree.command(name="stop", description="Para a música e desconecta")
+@bot.tree.command(name="stop", description="Para a música e sai do canal")
 async def stop(interaction: discord.Interaction):
-
     vc = interaction.guild.voice_client
-
     if vc:
         await vc.disconnect()
-        await interaction.response.send_message("⏹️ Música parada!")
+        await interaction.response.send_message("⏹️ Música parada.")
     else:
-        await interaction.response.send_message(
-            "⚠️ Não estou em um canal de voz.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Não estou em canal de voz.")
 
-# ========================
-# RUN
-# ========================
-bot.run(DISCORD_TOKEN)
+bot.run(TOKEN)
