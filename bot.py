@@ -26,7 +26,11 @@ ydl_opts = {
     }],
 }
 
-bot = commands.Bot(command_prefix='!')
+# Adicionar intents para discord.py v2
+intents = discord.Intents.default()
+intents.message_content = True  # Necessário para comandos baseados em mensagens
+
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 @bot.event
 async def on_ready():
