@@ -23,7 +23,7 @@ ytdl_opts = {
 }
 
 ffmpeg_opts = {
-    "options": "-vn -af loudnorm -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    "options": "-vn"
 }
 
 # ================= VARIÁVEIS =================
@@ -54,8 +54,6 @@ def get_music(query: str):
         info = ydl.extract_info(query, download=False)
         if "entries" in info:
             info = info["entries"][0]
-        # LOG PARA DEBUG
-        print(f"[DEBUG] URL tocando: {info['url']} | Título: {info['title']}")
         return info["url"], info["title"]
 
 
@@ -66,7 +64,7 @@ async def play_next(guild: discord.Guild):
         return
 
     if not queue:
-        # Fila vazia → esperar antes de desconectar
+        # Se a fila estiver vazia, espera AUTO_DISCONNECT_DELAY e desconecta
         await asyncio.sleep(AUTO_DISCONNECT_DELAY)
         if not queue and vc.is_connected():
             print(f"[DEBUG] Desconectando do canal {vc.channel} por fila vazia")
@@ -74,7 +72,6 @@ async def play_next(guild: discord.Guild):
         return
 
     url, title = queue[0]
-
     if not loop_music:
         queue.pop(0)
 
@@ -93,20 +90,26 @@ async def play(interaction: discord.Interaction, musica: str):
     vc = await ensure_voice(interaction)
     if not vc:
         return
+
     try:
         url, title = get_music(musica)
-    except Exception as e:
-        print(f"[ERROR] Falha ao buscar música: {e}")
-        await interaction.response.send_message("❌ Não consegui encontrar essa música.")
+    except Exception:
+        await interaction.response.send_message(
+            "❌ Não consegui encontrar essa música."
+        )
         return
 
     queue.append((url, title))
 
     if not vc.is_playing():
-        await interaction.response.send_message(f"🎶 Tocando agora: **{title}**")
+        await interaction.response.send_message(
+            f"🎶 Tocando agora: **{title}**"
+        )
         await play_next(interaction.guild)
     else:
-        await interaction.response.send_message(f"➕ Adicionado à fila: **{title}**")
+        await interaction.response.send_message(
+            f"➕ Adicionado à fila: **{title}**"
+        )
 
 
 @tree.command(name="pause", description="Pausa a música")
@@ -147,7 +150,9 @@ async def show_queue(interaction: discord.Interaction):
     text = ""
     for i, (_, title) in enumerate(queue, start=1):
         text += f"{i}. {title}\n"
-    await interaction.response.send_message(f"📜 **Fila atual:**\n{text}")
+    await interaction.response.send_message(
+        f"📜 **Fila atual:**\n{text}"
+    )
 
 
 @tree.command(name="loop", description="Ativa ou desativa o loop da música")
@@ -175,6 +180,7 @@ async def stop(interaction: discord.Interaction):
 async def on_ready():
     await tree.sync()
     print(f"✅ Bot conectado como {bot.user}")
+
 
 # ================= RUN =================
 
