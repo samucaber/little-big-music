@@ -5,13 +5,16 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import os
 
-# Use variáveis de ambiente (configuraremos depois no Heroku)
+# Variáveis de ambiente
 DISCORD_TOKEN = os.getenv('DISCORD_TOKEN')
 SPOTIFY_CLIENT_ID = os.getenv('SPOTIFY_CLIENT_ID')
 SPOTIFY_CLIENT_SECRET = os.getenv('SPOTIFY_CLIENT_SECRET')
 
-# Configuração do Spotify
-sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET))
+# Inicializar Spotify apenas se as credenciais estiverem definidas (opcional)
+if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+    sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET))
+else:
+    sp = None  # Spotify não disponível
 
 # Configuração do YouTube
 ydl_opts = {
@@ -39,6 +42,9 @@ async def play(ctx, url):
     vc = await channel.connect()
     
     if 'spotify.com' in url:
+        if sp is None:
+            await ctx.send("Spotify não configurado. Use links do YouTube.")
+            return
         # Extrair ID da música do Spotify
         track_id = url.split('/')[-1].split('?')[0]
         track = sp.track(track_id)
@@ -62,4 +68,3 @@ async def stop(ctx):
         await ctx.voice_client.disconnect()
 
 bot.run(DISCORD_TOKEN)
-
