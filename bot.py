@@ -23,25 +23,23 @@ ytdl_opts = {
 }
 
 ffmpeg_opts = {
-    "options": "-vn"
+    "options": "-vn -af loudnorm -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 }
 
 # ================= VARIÁVEIS =================
 
 queue = []
 loop_music = False
+AUTO_DISCONNECT_DELAY = 30  # segundos antes de sair quando não houver música
 
 # ================= FUNÇÕES =================
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
-
     if vc:
         return vc
-
     if interaction.user.voice:
         return await interaction.user.voice.channel.connect()
-
     await interaction.response.send_message(
         "❌ Você precisa entrar em um canal de voz.",
         ephemeral=True
@@ -52,24 +50,24 @@ async def ensure_voice(interaction: discord.Interaction):
 def get_music(query: str):
     if not query.startswith("http"):
         query = f"ytsearch1:{query}"
-
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
-
         if "entries" in info:
             info = info["entries"][0]
-
         return info["url"], info["title"]
 
 
 async def play_next(guild: discord.Guild):
     global loop_music
-
     vc = guild.voice_client
     if not vc:
         return
 
     if not queue:
+        # Fila vazia → esperar um pouco antes de desconectar
+        await asyncio.sleep(AUTO_DISCONNECT_DELAY)
+        if not queue and vc.is_connected():
+            await vc.disconnect()
         return
 
     url, title = queue[0]
@@ -92,26 +90,19 @@ async def play(interaction: discord.Interaction, musica: str):
     vc = await ensure_voice(interaction)
     if not vc:
         return
-
     try:
         url, title = get_music(musica)
     except Exception:
-        await interaction.response.send_message(
-            "❌ Não consegui encontrar essa música."
-        )
+        await interaction.response.send_message("❌ Não consegui encontrar essa música.")
         return
 
     queue.append((url, title))
 
     if not vc.is_playing():
-        await interaction.response.send_message(
-            f"🎶 Tocando agora: **{title}**"
-        )
+        await interaction.response.send_message(f"🎶 Tocando agora: **{title}**")
         await play_next(interaction.guild)
     else:
-        await interaction.response.send_message(
-            f"➕ Adicionado à fila: **{title}**"
-        )
+        await interaction.response.send_message(f"➕ Adicionado à fila: **{title}**")
 
 
 @tree.command(name="pause", description="Pausa a música")
@@ -149,14 +140,10 @@ async def show_queue(interaction: discord.Interaction):
     if not queue:
         await interaction.response.send_message("📭 Fila vazia")
         return
-
     text = ""
     for i, (_, title) in enumerate(queue, start=1):
         text += f"{i}. {title}\n"
-
-    await interaction.response.send_message(
-        f"📜 **Fila atual:**\n{text}"
-    )
+    await interaction.response.send_message(f"📜 **Fila atual:**\n{text}")
 
 
 @tree.command(name="loop", description="Ativa ou desativa o loop da música")
