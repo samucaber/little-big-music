@@ -54,6 +54,8 @@ def get_music(query: str):
         info = ydl.extract_info(query, download=False)
         if "entries" in info:
             info = info["entries"][0]
+        # LOG PARA DEBUG
+        print(f"[DEBUG] URL tocando: {info['url']} | Título: {info['title']}")
         return info["url"], info["title"]
 
 
@@ -64,9 +66,10 @@ async def play_next(guild: discord.Guild):
         return
 
     if not queue:
-        # Fila vazia → esperar um pouco antes de desconectar
+        # Fila vazia → esperar antes de desconectar
         await asyncio.sleep(AUTO_DISCONNECT_DELAY)
         if not queue and vc.is_connected():
+            print(f"[DEBUG] Desconectando do canal {vc.channel} por fila vazia")
             await vc.disconnect()
         return
 
@@ -92,7 +95,8 @@ async def play(interaction: discord.Interaction, musica: str):
         return
     try:
         url, title = get_music(musica)
-    except Exception:
+    except Exception as e:
+        print(f"[ERROR] Falha ao buscar música: {e}")
         await interaction.response.send_message("❌ Não consegui encontrar essa música.")
         return
 
