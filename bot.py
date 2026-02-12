@@ -10,6 +10,7 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.message_content = False
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
@@ -19,21 +20,30 @@ ytdl_opts = {
     "format": "bestaudio/best",
     "quiet": True,
     "default_search": "ytsearch",
-    "ignoreerrors": True
+    "ignoreerrors": True,
 }
 
 ffmpeg_opts = {
-    "options": "-vn"
+    "options": "-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
 }
 
-# ================= VARIÁVEIS =================
+# ================= VARIÁVEIS POR SERVIDOR =================
 
-queue = []
-loop_music = False
-current_music = None
+queues = {}
+loop_status = {}
+current_music = {}
 AUTO_DISCONNECT_DELAY = 60  # 1 minuto
 
-# ================= FUNÇÕES =================
+
+# ================= FUNÇÕES AUXILIARES =================
+
+def get_guild_data(guild_id):
+    if guild_id not in queues:
+        queues[guild_id] = []
+        loop_status[guild_id] = False
+        current_music[guild_id] = None
+    return queues[guild_id]
+
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -55,35 +65,40 @@ def get_music(query: str):
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
 
-        # Playlist
-        if "entries" in info:
+        if "entries" in info:  # Playlist
             results = []
             for entry in info["entries"]:
                 if entry:
                     results.append((entry["url"], entry["title"]))
             return results
 
-        # Música única
         return [(info["url"], info["title"])]
 
 
-async def play_next(guild: discord.Guild):
-    global loop_music, current_music
-
+async def auto_disconnect(guild: discord.Guild):
+    await asyncio.sleep(AUTO_DISCONNECT_DELAY)
     vc = guild.voice_client
+    if vc and not vc.is_playing():
+        await vc.disconnect()
+
+
+async def play_next(guild: discord.Guild):
+    guild_id = guild.id
+    queue = get_guild_data(guild_id)
+    vc = guild.voice_client
+
     if not vc:
         return
 
     if not queue:
-        await asyncio.sleep(AUTO_DISCONNECT_DELAY)
-        if not queue and vc.is_connected():
-            await vc.disconnect()
+        current_music[guild_id] = None
+        bot.loop.create_task(auto_disconnect(guild))
         return
 
     url, title = queue[0]
-    current_music = title
+    current_music[guild_id] = title
 
-    if not loop_music:
+    if not loop_status[guild_id]:
         queue.pop(0)
 
     vc.play(
@@ -92,6 +107,7 @@ async def play_next(guild: discord.Guild):
             play_next(guild), bot.loop
         )
     )
+
 
 # ================= SLASH COMMANDS =================
 
@@ -109,6 +125,8 @@ async def play(interaction: discord.Interaction, musica: str):
     except Exception:
         await interaction.followup.send("❌ Não consegui encontrar essa música.")
         return
+
+    queue = get_guild_data(interaction.guild.id)
 
     for item in results:
         queue.append(item)
@@ -156,6 +174,8 @@ async def skip(interaction: discord.Interaction):
 
 @tree.command(name="queue", description="Mostra a fila")
 async def show_queue(interaction: discord.Interaction):
+    queue = get_guild_data(interaction.guild.id)
+
     if not queue:
         await interaction.response.send_message("📭 Fila vazia")
         return
@@ -169,8 +189,10 @@ async def show_queue(interaction: discord.Interaction):
     )
 
 
-@tree.command(name="clearqueue", description="Limpa a fila de músicas")
+@tree.command(name="clearqueue", description="Limpa a fila")
 async def clearqueue(interaction: discord.Interaction):
+    queue = get_guild_data(interaction.guild.id)
+
     if not queue:
         await interaction.response.send_message("📭 A fila já está vazia")
         return
@@ -181,11 +203,12 @@ async def clearqueue(interaction: discord.Interaction):
 
 @tree.command(name="musicaatual", description="Mostra a música atual")
 async def musicaatual(interaction: discord.Interaction):
+    guild_id = interaction.guild.id
     vc = interaction.guild.voice_client
 
-    if vc and vc.is_playing() and current_music:
+    if vc and vc.is_playing() and current_music.get(guild_id):
         await interaction.response.send_message(
-            f"🎶 Tocando agora: **{current_music}**"
+            f"🎶 Tocando agora: **{current_music[guild_id]}**"
         )
     else:
         await interaction.response.send_message("❌ Nenhuma música está tocando")
@@ -193,18 +216,22 @@ async def musicaatual(interaction: discord.Interaction):
 
 @tree.command(name="loop", description="Ativa ou desativa o loop")
 async def loop(interaction: discord.Interaction):
-    global loop_music
-    loop_music = not loop_music
-    status = "ativado" if loop_music else "desativado"
+    guild_id = interaction.guild.id
+    loop_status[guild_id] = not loop_status.get(guild_id, False)
+
+    status = "ativado" if loop_status[guild_id] else "desativado"
     await interaction.response.send_message(f"🔁 Loop {status}")
 
 
 @tree.command(name="stop", description="Para a música e sai do canal")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+    guild_id = interaction.guild.id
+
     if vc:
         await vc.disconnect()
-        queue.clear()
+        queues[guild_id] = []
+        current_music[guild_id] = None
         await interaction.response.send_message("🛑 Música parada e saí do canal")
     else:
         await interaction.response.send_message("❌ Não estou em um canal")
