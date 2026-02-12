@@ -10,36 +10,44 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.voice_states = True
+
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# ================= YTDLP / FFMPEG =================
+# ================= YTDLP CONFIG =================
 
 ytdl_opts = {
     "format": "bestaudio/best",
     "quiet": True,
     "default_search": "ytsearch",
-    "noplaylist": True,
+    "noplaylist": False,  # Agora aceita playlist
 }
 
 ffmpeg_opts = {
     "options": "-vn"
 }
 
+ytdl = yt_dlp.YoutubeDL(ytdl_opts)
+
 # ================= VARIÁVEIS =================
 
 queue = []
 loop_music = False
-AUTO_DISCONNECT_DELAY = 30  # segundos antes de sair quando não houver música
+AUTO_DISCONNECT_DELAY = 60  # 1 minuto
+disconnect_task = None
 
 # ================= FUNÇÕES =================
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+
     if vc:
         return vc
+
     if interaction.user.voice:
         return await interaction.user.voice.channel.connect()
+
     await interaction.response.send_message(
         "❌ Você precisa entrar em um canal de voz.",
         ephemeral=True
@@ -50,28 +58,52 @@ async def ensure_voice(interaction: discord.Interaction):
 def get_music(query: str):
     if not query.startswith("http"):
         query = f"ytsearch1:{query}"
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if "entries" in info:
-            info = info["entries"][0]
-        return info["url"], info["title"]
+
+    info = ytdl.extract_info(query, download=False)
+
+    musics = []
+
+    if "entries" in info:
+        for entry in info["entries"]:
+            if entry:
+                musics.append((entry["url"], entry["title"]))
+    else:
+        musics.append((info["url"], info["title"]))
+
+    return musics
+
+
+async def auto_disconnect(guild):
+    global disconnect_task
+
+    await asyncio.sleep(AUTO_DISCONNECT_DELAY)
+
+    vc = guild.voice_client
+    if vc and not vc.is_playing() and not queue:
+        await vc.disconnect()
+        print("🔌 Desconectado automaticamente por inatividade")
+
+    disconnect_task = None
 
 
 async def play_next(guild: discord.Guild):
-    global loop_music
+    global loop_music, disconnect_task
+
     vc = guild.voice_client
     if not vc:
         return
 
     if not queue:
-        # Se a fila estiver vazia, espera AUTO_DISCONNECT_DELAY e desconecta
-        await asyncio.sleep(AUTO_DISCONNECT_DELAY)
-        if not queue and vc.is_connected():
-            print(f"[DEBUG] Desconectando do canal {vc.channel} por fila vazia")
-            await vc.disconnect()
+        if not disconnect_task:
+            disconnect_task = bot.loop.create_task(auto_disconnect(guild))
         return
 
+    if disconnect_task:
+        disconnect_task.cancel()
+        disconnect_task = None
+
     url, title = queue[0]
+
     if not loop_music:
         queue.pop(0)
 
@@ -84,31 +116,34 @@ async def play_next(guild: discord.Guild):
 
 # ================= SLASH COMMANDS =================
 
-@tree.command(name="play", description="Toca música pelo nome ou link")
-@app_commands.describe(musica="Nome da música ou link do YouTube")
+@tree.command(name="play", description="Toca música ou playlist")
+@app_commands.describe(musica="Nome ou link do YouTube")
 async def play(interaction: discord.Interaction, musica: str):
+
+    await interaction.response.defer()
+
     vc = await ensure_voice(interaction)
     if not vc:
         return
 
     try:
-        url, title = get_music(musica)
-    except Exception:
-        await interaction.response.send_message(
-            "❌ Não consegui encontrar essa música."
-        )
+        musics = get_music(musica)
+    except Exception as e:
+        await interaction.followup.send("❌ Não consegui encontrar essa música.")
+        print("Erro yt-dlp:", e)
         return
 
-    queue.append((url, title))
+    for music in musics:
+        queue.append(music)
 
     if not vc.is_playing():
-        await interaction.response.send_message(
-            f"🎶 Tocando agora: **{title}**"
+        await interaction.followup.send(
+            f"🎶 Tocando: **{musics[0][1]}**"
         )
         await play_next(interaction.guild)
     else:
-        await interaction.response.send_message(
-            f"➕ Adicionado à fila: **{title}**"
+        await interaction.followup.send(
+            f"➕ {len(musics)} música(s) adicionada(s) à fila"
         )
 
 
@@ -142,20 +177,21 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Nada tocando")
 
 
-@tree.command(name="queue", description="Mostra a fila de músicas")
+@tree.command(name="queue", description="Mostra a fila")
 async def show_queue(interaction: discord.Interaction):
+
     if not queue:
         await interaction.response.send_message("📭 Fila vazia")
         return
+
     text = ""
-    for i, (_, title) in enumerate(queue, start=1):
+    for i, (_, title) in enumerate(queue[:10], start=1):
         text += f"{i}. {title}\n"
-    await interaction.response.send_message(
-        f"📜 **Fila atual:**\n{text}"
-    )
+
+    await interaction.response.send_message(f"📜 **Fila:**\n{text}")
 
 
-@tree.command(name="loop", description="Ativa ou desativa o loop da música")
+@tree.command(name="loop", description="Ativa ou desativa loop")
 async def loop(interaction: discord.Interaction):
     global loop_music
     loop_music = not loop_music
@@ -163,13 +199,13 @@ async def loop(interaction: discord.Interaction):
     await interaction.response.send_message(f"🔁 Loop {status}")
 
 
-@tree.command(name="stop", description="Para a música e sai do canal")
+@tree.command(name="stop", description="Para e desconecta")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc:
-        await vc.disconnect()
         queue.clear()
-        await interaction.response.send_message("🛑 Música parada e saí do canal")
+        await vc.disconnect()
+        await interaction.response.send_message("🛑 Desconectado")
     else:
         await interaction.response.send_message("❌ Não estou em um canal")
 
@@ -179,12 +215,11 @@ async def stop(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     await tree.sync()
-    print(f"✅ Bot conectado como {bot.user}")
-
+    print(f"✅ Conectado como {bot.user}")
 
 # ================= RUN =================
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN não encontrado nas variáveis de ambiente")
+    raise RuntimeError("DISCORD_TOKEN não encontrado")
 
 bot.run(TOKEN)
