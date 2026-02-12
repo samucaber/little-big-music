@@ -10,40 +10,38 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
-intents.message_content = False
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# ================= YTDLP / FFMPEG =================
+# ================= YTDLP CONFIG =================
 
 ytdl_opts = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "quiet": True,
     "default_search": "ytsearch",
     "ignoreerrors": True,
+    "nocheckcertificate": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android"]
+        }
+    }
 }
 
 ffmpeg_opts = {
-    "options": "-vn -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "options": "-vn"
 }
 
-# ================= VARIÁVEIS POR SERVIDOR =================
+# ================= CONTROLE POR SERVIDOR =================
 
 queues = {}
-loop_status = {}
+loops = {}
 current_music = {}
-AUTO_DISCONNECT_DELAY = 60  # 1 minuto
+AUTO_DISCONNECT_DELAY = 60
 
 
-# ================= FUNÇÕES AUXILIARES =================
-
-def get_guild_data(guild_id):
-    if guild_id not in queues:
-        queues[guild_id] = []
-        loop_status[guild_id] = False
-        current_music[guild_id] = None
-    return queues[guild_id]
-
+# ================= FUNÇÕES =================
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -65,41 +63,36 @@ def get_music(query: str):
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
 
-        if "entries" in info:  # Playlist
+        # Playlist
+        if "entries" in info:
             results = []
             for entry in info["entries"]:
                 if entry:
                     results.append((entry["url"], entry["title"]))
             return results
 
+        # Música única
         return [(info["url"], info["title"])]
-
-
-async def auto_disconnect(guild: discord.Guild):
-    await asyncio.sleep(AUTO_DISCONNECT_DELAY)
-    vc = guild.voice_client
-    if vc and not vc.is_playing():
-        await vc.disconnect()
 
 
 async def play_next(guild: discord.Guild):
     guild_id = guild.id
-    queue = get_guild_data(guild_id)
     vc = guild.voice_client
 
     if not vc:
         return
 
-    if not queue:
-        current_music[guild_id] = None
-        bot.loop.create_task(auto_disconnect(guild))
+    if not queues.get(guild_id):
+        await asyncio.sleep(AUTO_DISCONNECT_DELAY)
+        if not queues.get(guild_id) and vc.is_connected():
+            await vc.disconnect()
         return
 
-    url, title = queue[0]
+    url, title = queues[guild_id][0]
     current_music[guild_id] = title
 
-    if not loop_status[guild_id]:
-        queue.pop(0)
+    if not loops.get(guild_id, False):
+        queues[guild_id].pop(0)
 
     vc.play(
         discord.FFmpegPCMAudio(url, **ffmpeg_opts),
@@ -114,6 +107,8 @@ async def play_next(guild: discord.Guild):
 @tree.command(name="play", description="Toca música pelo nome, link ou playlist")
 @app_commands.describe(musica="Nome da música ou link do YouTube")
 async def play(interaction: discord.Interaction, musica: str):
+    guild_id = interaction.guild.id
+
     vc = await ensure_voice(interaction)
     if not vc:
         return
@@ -126,10 +121,11 @@ async def play(interaction: discord.Interaction, musica: str):
         await interaction.followup.send("❌ Não consegui encontrar essa música.")
         return
 
-    queue = get_guild_data(interaction.guild.id)
+    if guild_id not in queues:
+        queues[guild_id] = []
 
     for item in results:
-        queue.append(item)
+        queues[guild_id].append(item)
 
     if not vc.is_playing():
         await interaction.followup.send(
@@ -174,14 +170,14 @@ async def skip(interaction: discord.Interaction):
 
 @tree.command(name="queue", description="Mostra a fila")
 async def show_queue(interaction: discord.Interaction):
-    queue = get_guild_data(interaction.guild.id)
+    guild_id = interaction.guild.id
 
-    if not queue:
+    if not queues.get(guild_id):
         await interaction.response.send_message("📭 Fila vazia")
         return
 
     text = ""
-    for i, (_, title) in enumerate(queue, start=1):
+    for i, (_, title) in enumerate(queues[guild_id], start=1):
         text += f"{i}. {title}\n"
 
     await interaction.response.send_message(
@@ -191,13 +187,13 @@ async def show_queue(interaction: discord.Interaction):
 
 @tree.command(name="clearqueue", description="Limpa a fila")
 async def clearqueue(interaction: discord.Interaction):
-    queue = get_guild_data(interaction.guild.id)
+    guild_id = interaction.guild.id
 
-    if not queue:
+    if not queues.get(guild_id):
         await interaction.response.send_message("📭 A fila já está vazia")
         return
 
-    queue.clear()
+    queues[guild_id].clear()
     await interaction.response.send_message("🗑️ Fila limpa com sucesso")
 
 
@@ -217,21 +213,20 @@ async def musicaatual(interaction: discord.Interaction):
 @tree.command(name="loop", description="Ativa ou desativa o loop")
 async def loop(interaction: discord.Interaction):
     guild_id = interaction.guild.id
-    loop_status[guild_id] = not loop_status.get(guild_id, False)
+    loops[guild_id] = not loops.get(guild_id, False)
 
-    status = "ativado" if loop_status[guild_id] else "desativado"
+    status = "ativado" if loops[guild_id] else "desativado"
     await interaction.response.send_message(f"🔁 Loop {status}")
 
 
 @tree.command(name="stop", description="Para a música e sai do canal")
 async def stop(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
     guild_id = interaction.guild.id
+    vc = interaction.guild.voice_client
 
     if vc:
         await vc.disconnect()
         queues[guild_id] = []
-        current_music[guild_id] = None
         await interaction.response.send_message("🛑 Música parada e saí do canal")
     else:
         await interaction.response.send_message("❌ Não estou em um canal")
