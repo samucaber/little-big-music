@@ -19,8 +19,7 @@ ytdl_opts = {
     "format": "bestaudio/best",
     "quiet": True,
     "default_search": "ytsearch",
-    "ignoreerrors": True,
-    "extract_flat": False
+    "ignoreerrors": True
 }
 
 ffmpeg_opts = {
@@ -38,6 +37,7 @@ AUTO_DISCONNECT_DELAY = 60  # 1 minuto
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
+
     if vc:
         return vc
 
@@ -55,7 +55,7 @@ def get_music(query: str):
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
 
-        # Se for playlist
+        # Playlist
         if "entries" in info:
             results = []
             for entry in info["entries"]:
@@ -145,7 +145,7 @@ async def resume(interaction: discord.Interaction):
 
 
 @tree.command(name="skip", description="Pula a música atual")
-async def skip(interaction: discord.Interation):
+async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
         vc.stop()
