@@ -4,6 +4,7 @@ from discord import app_commands
 import yt_dlp
 import asyncio
 import os
+import uuid
 
 # ================= CONFIG =================
 
@@ -14,26 +15,50 @@ intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-# ================= YTDLP CONFIG =================
+AUTO_DISCONNECT_DELAY = 60
 
-ytdl_opts = {
-    "format": "bestaudio",
-    "quiet": True,
-    "default_search": "ytsearch",
-    "ignoreerrors": True,
-    "nocheckcertificate": True,
-    "source_address": "0.0.0.0",
-}
+os.makedirs("downloads", exist_ok=True)
 
-# ================= CONTROLE POR SERVIDOR =================
+# ================= YTDLP =================
+
+def download_music(query: str):
+    unique_id = str(uuid.uuid4())
+
+    ytdl_opts = {
+        "format": "bestaudio/best",
+        "quiet": True,
+        "default_search": "ytsearch",
+        "outtmpl": f"downloads/{unique_id}_%(title)s.%(ext)s",
+        "nocheckcertificate": True,
+        "ignoreerrors": True,
+    }
+
+    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
+        info = ydl.extract_info(query, download=True)
+
+        if not info:
+            return []
+
+        results = []
+
+        if "entries" in info:
+            for entry in info["entries"]:
+                if entry:
+                    filename = ydl.prepare_filename(entry)
+                    results.append((filename, entry["title"]))
+        else:
+            filename = ydl.prepare_filename(info)
+            results.append((filename, info["title"]))
+
+        return results
+
+
+# ================= CONTROLE =================
 
 queues = {}
 loops = {}
 current_music = {}
-AUTO_DISCONNECT_DELAY = 60
 
-
-# ================= FUNÇÕES =================
 
 async def ensure_voice(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -51,20 +76,6 @@ async def ensure_voice(interaction: discord.Interaction):
     return None
 
 
-def get_music(query: str):
-    with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
-        info = ydl.extract_info(query, download=False)
-
-        if "entries" in info:
-            results = []
-            for entry in info["entries"]:
-                if entry:
-                    results.append((entry["url"], entry["title"]))
-            return results
-
-        return [(info["url"], info["title"])]
-
-
 async def play_next(guild: discord.Guild):
     guild_id = guild.id
     vc = guild.voice_client
@@ -75,43 +86,43 @@ async def play_next(guild: discord.Guild):
     if not queues.get(guild_id):
         current_music[guild_id] = None
         await asyncio.sleep(AUTO_DISCONNECT_DELAY)
+
         if not queues.get(guild_id) and vc.is_connected():
             await vc.disconnect()
+
         return
 
-    url, title = queues[guild_id][0]
+    filename, title = queues[guild_id][0]
     current_music[guild_id] = title
 
     if not loops.get(guild_id, False):
         queues[guild_id].pop(0)
 
+    def after_play(error):
+        try:
+            if os.path.exists(filename):
+                os.remove(filename)
+        except Exception as e:
+            print("Erro ao deletar arquivo:", e)
+
+        asyncio.run_coroutine_threadsafe(
+            play_next(guild), bot.loop
+        )
+
     try:
-        audio = await discord.FFmpegOpusAudio.from_probe(
-            url,
-            before_options=(
-                "-reconnect 1 "
-                "-reconnect_streamed 1 "
-                "-reconnect_delay_max 5"
-            ),
-            options="-vn"
-        )
-
         vc.play(
-            audio,
-            after=lambda e: asyncio.run_coroutine_threadsafe(
-                play_next(guild), bot.loop
-            )
+            discord.FFmpegOpusAudio(filename),
+            after=after_play
         )
-
     except Exception as e:
         print("Erro ao tocar:", e)
         await play_next(guild)
 
 
-# ================= SLASH COMMANDS =================
+# ================= COMANDOS =================
 
 @tree.command(name="play", description="Toca música pelo nome, link ou playlist")
-@app_commands.describe(musica="Nome da música ou link do YouTube")
+@app_commands.describe(musica="Nome ou link do YouTube")
 async def play(interaction: discord.Interaction, musica: str):
     guild_id = interaction.guild.id
 
@@ -122,9 +133,14 @@ async def play(interaction: discord.Interaction, musica: str):
     await interaction.response.defer()
 
     try:
-        results = get_music(musica)
-    except Exception:
-        await interaction.followup.send("❌ Não consegui encontrar essa música.")
+        results = download_music(musica)
+    except Exception as e:
+        print("Erro download:", e)
+        await interaction.followup.send("❌ Não consegui baixar essa música.")
+        return
+
+    if not results:
+        await interaction.followup.send("❌ Não encontrei resultados.")
         return
 
     if guild_id not in queues:
@@ -164,7 +180,7 @@ async def resume(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Música não está pausada")
 
 
-@tree.command(name="skip", description="Pula a música atual")
+@tree.command(name="skip", description="Pula a música")
 async def skip(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc and vc.is_playing():
@@ -186,9 +202,7 @@ async def show_queue(interaction: discord.Interaction):
     for i, (_, title) in enumerate(queues[guild_id], start=1):
         text += f"{i}. {title}\n"
 
-    await interaction.response.send_message(
-        f"📜 **Fila:**\n{text}"
-    )
+    await interaction.response.send_message(f"📜 **Fila:**\n{text}")
 
 
 @tree.command(name="clearqueue", description="Limpa a fila")
@@ -200,7 +214,7 @@ async def clearqueue(interaction: discord.Interaction):
         return
 
     queues[guild_id].clear()
-    await interaction.response.send_message("🗑️ Fila limpa com sucesso")
+    await interaction.response.send_message("🗑️ Fila limpa")
 
 
 @tree.command(name="musicaatual", description="Mostra a música atual")
@@ -213,7 +227,7 @@ async def musicaatual(interaction: discord.Interaction):
             f"🎶 Tocando agora: **{current_music[guild_id]}**"
         )
     else:
-        await interaction.response.send_message("❌ Nenhuma música está tocando")
+        await interaction.response.send_message("❌ Nenhuma música tocando")
 
 
 @tree.command(name="loop", description="Ativa ou desativa o loop")
@@ -225,7 +239,7 @@ async def loop(interaction: discord.Interaction):
     await interaction.response.send_message(f"🔁 Loop {status}")
 
 
-@tree.command(name="stop", description="Para tudo e sai do canal")
+@tree.command(name="stop", description="Para e sai do canal")
 async def stop(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     vc = interaction.guild.voice_client
@@ -233,7 +247,8 @@ async def stop(interaction: discord.Interaction):
     if vc:
         await vc.disconnect()
         queues[guild_id] = []
-        await interaction.response.send_message("🛑 Música parada e saí do canal")
+        current_music[guild_id] = None
+        await interaction.response.send_message("🛑 Música parada e desconectado")
     else:
         await interaction.response.send_message("❌ Não estou em um canal")
 
@@ -249,6 +264,6 @@ async def on_ready():
 # ================= RUN =================
 
 if not TOKEN:
-    raise RuntimeError("DISCORD_TOKEN não encontrado nas variáveis de ambiente")
+    raise RuntimeError("DISCORD_TOKEN não configurado")
 
 bot.run(TOKEN)
