@@ -10,27 +10,19 @@ import os
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
+intents.voice_states = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
 # ================= YTDLP CONFIG =================
 
 ytdl_opts = {
-    "format": "bestaudio[ext=m4a]/bestaudio/best",
+    "format": "bestaudio",
     "quiet": True,
     "default_search": "ytsearch",
     "ignoreerrors": True,
     "nocheckcertificate": True,
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["android"]
-        }
-    }
-}
-
-ffmpeg_opts = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn"
+    "source_address": "0.0.0.0",
 }
 
 # ================= CONTROLE POR SERVIDOR =================
@@ -63,7 +55,6 @@ def get_music(query: str):
     with yt_dlp.YoutubeDL(ytdl_opts) as ydl:
         info = ydl.extract_info(query, download=False)
 
-        # Playlist
         if "entries" in info:
             results = []
             for entry in info["entries"]:
@@ -71,7 +62,6 @@ def get_music(query: str):
                     results.append((entry["url"], entry["title"]))
             return results
 
-        # Música única
         return [(info["url"], info["title"])]
 
 
@@ -83,6 +73,7 @@ async def play_next(guild: discord.Guild):
         return
 
     if not queues.get(guild_id):
+        current_music[guild_id] = None
         await asyncio.sleep(AUTO_DISCONNECT_DELAY)
         if not queues.get(guild_id) and vc.is_connected():
             await vc.disconnect()
@@ -94,12 +85,27 @@ async def play_next(guild: discord.Guild):
     if not loops.get(guild_id, False):
         queues[guild_id].pop(0)
 
-    vc.play(
-        discord.FFmpegPCMAudio(url, **ffmpeg_opts),
-        after=lambda e: asyncio.run_coroutine_threadsafe(
-            play_next(guild), bot.loop
+    try:
+        audio = await discord.FFmpegOpusAudio.from_probe(
+            url,
+            before_options=(
+                "-reconnect 1 "
+                "-reconnect_streamed 1 "
+                "-reconnect_delay_max 5"
+            ),
+            options="-vn"
         )
-    )
+
+        vc.play(
+            audio,
+            after=lambda e: asyncio.run_coroutine_threadsafe(
+                play_next(guild), bot.loop
+            )
+        )
+
+    except Exception as e:
+        print("Erro ao tocar:", e)
+        await play_next(guild)
 
 
 # ================= SLASH COMMANDS =================
@@ -219,7 +225,7 @@ async def loop(interaction: discord.Interaction):
     await interaction.response.send_message(f"🔁 Loop {status}")
 
 
-@tree.command(name="stop", description="Para a música e sai do canal")
+@tree.command(name="stop", description="Para tudo e sai do canal")
 async def stop(interaction: discord.Interaction):
     guild_id = interaction.guild.id
     vc = interaction.guild.voice_client
